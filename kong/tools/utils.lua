@@ -43,6 +43,11 @@ void ERR_load_crypto_strings(void);
 void ERR_free_strings(void);
 
 const char *ERR_reason_error_string(unsigned long e);
+
+int open(const char * filename, int flags, int mode);
+size_t read(int fd, void *buf, size_t count);
+int close(int fd);
+char *strerror(int errnum);
 ]]
 
 local _M = {}
@@ -115,11 +120,51 @@ do
   end
 end
 
+local get_rand_bytes
+
 do
+  local ngx_log = ngx.log
+  local WARN    = ngx.WARN
+
+  local system_constants = require "lua_system_constants"
+  local O_RDONLY = system_constants.O_RDONLY()
   local bytes_buf_t = ffi.typeof "char[?]"
 
-  function _M.get_rand_bytes(n_bytes)
+  -- try to get n_bytes of CSPRNG data, first via /dev/urandom,
+  -- and then falling back to OpenSSL if necessary
+  get_rand_bytes = function(n_bytes, urandom)
     local buf = ffi_new(bytes_buf_t, n_bytes)
+    local fallback = false
+
+    -- only read from urandom if we were explicitly asked
+    if urandom then
+      local fd = ffi.C.open("/dev/urandom", O_RDONLY)
+      if fd < 0 then
+        ngx_log(WARN, "Error opening random fd: ",
+                      ffi_str(ffi.C.strerror(ffi.errno())))
+
+        -- fall back to openssl
+        fallback = true
+      end
+
+      local res = ffi.C.read(fd, buf, n_bytes)
+      if res <= 0 then
+        ngx_log(WARN, "Error reading from urandom: ",
+                      ffi_str(ffi.C.strerror(ffi.errno())))
+
+        fallback = true
+      end
+
+      if ffi.C.close(fd) ~= 0 then
+        ngx_log(WARN, "Error closing urandom: ",
+                      ffi_str(ffi.C.strerror(ffi.errno())))
+      end
+
+      -- we didnt encounter an error, return our buffer as a string
+      if not fallback then
+        return ffi_str(buf, n_bytes)
+      end
+    end
 
     if C.RAND_bytes(buf, n_bytes) == 0 then
       -- get error code
@@ -139,9 +184,9 @@ do
 
     return ffi_str(buf, n_bytes)
   end
-end
 
-local v4_uuid = uuid.generate_v4
+  _M.get_rand_bytes = get_rand_bytes
+end
 
 --- Generates a v4 uuid.
 -- @function uuid
@@ -149,9 +194,28 @@ local v4_uuid = uuid.generate_v4
 _M.uuid = uuid.generate_v4
 
 --- Generates a random unique string
--- @return string  The random string (a uuid without hyphens)
-function _M.random_string()
-  return v4_uuid():gsub("-", "")
+-- @return string  The random string (a chunk of base64ish-encoded random bytes)
+do
+  local char = string.char
+  local rand = math.random
+
+  -- generate a random-looking string by retrieving a chunk of bytes and
+  -- replacing non-alphanumeric characters with random alphanumeric replacements
+  -- (we dont care about deriving these bytes securely)
+  -- this serves to attempt to maintain some backward compatibility with the
+  -- previous implementation (stripping a UUID of its hyphens), while significantly
+  -- expanding the size of the keyspace.
+  local function random_string()
+    -- get 24 bytes, which will return a 32 char string after encoding
+    -- this is done in attempt to maintain backwards compatibility as
+    -- much as possible while improving the strength of this function
+    return ngx.encode_base64(get_rand_bytes(24), true)
+           :gsub("/", char(rand(48, 57)))  -- 0 - 10
+           :gsub("+", char(rand(65, 90)))  -- A - Z
+           :gsub("=", char(rand(97, 122))) -- a - z
+  end
+
+  _M.random_string = random_string
 end
 
 local uuid_regex = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
