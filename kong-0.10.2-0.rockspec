@@ -30,6 +30,7 @@ dependencies = {
   "lua_pack == 1.0.4",
   "lua-resty-dns-client == 0.4.1",
   "lua-resty-worker-events == 0.3.0",
+  "lua-resty-waf == 0.10.1",
 }
 build = {
   type = "builtin",
