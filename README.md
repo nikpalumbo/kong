@@ -1,5 +1,4 @@
-# API Gateway & Microservice Management [![Build Status][badge-travis-image]][badge-travis-url]
-[![][kong-logo]][kong-url]
+# API Gateway & Microservice Management
 
 This repo is a fork from https://github.com/Mashape/kong
 
